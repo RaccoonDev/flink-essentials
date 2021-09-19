@@ -23,7 +23,7 @@ lazy val root = (project in file(".")).
     libraryDependencies ++= flinkDependencies
   )
 
-assembly / mainClass := Some("com.devraccoon.Job")
+assembly / mainClass := Some("com.devraccoon.playground.Playground")
 
 // make run command include the provided dependencies
 Compile / run  := Defaults.runTask(Compile / fullClasspath,

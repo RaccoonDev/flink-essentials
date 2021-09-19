@@ -43,3 +43,6 @@ bin/
 
 #general
 *.class
+
+# project specifics
+outputs/
