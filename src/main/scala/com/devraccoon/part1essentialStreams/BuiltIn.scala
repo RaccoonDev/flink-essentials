@@ -1,6 +1,5 @@
 package com.devraccoon.part1essentialStreams
 
-import org.apache.flink.api.common.RuntimeExecutionMode
 import org.apache.flink.api.common.serialization.SimpleStringEncoder
 import org.apache.flink.core.fs.{FileSystem, Path}
 import org.apache.flink.streaming.api.datastream.DataStreamSink
