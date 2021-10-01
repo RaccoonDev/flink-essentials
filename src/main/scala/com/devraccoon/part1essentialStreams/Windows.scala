@@ -5,8 +5,8 @@ import org.apache.flink.api.common.eventtime.{SerializableTimestampAssigner, Wat
 import org.apache.flink.streaming.api.scala.{StreamExecutionEnvironment, _}
 import org.apache.flink.streaming.api.windowing.assigners.{EventTimeSessionWindows, GlobalWindows, SlidingEventTimeWindows, TumblingEventTimeWindows}
 import org.apache.flink.streaming.api.windowing.time.Time
-import org.apache.flink.streaming.api.windowing.triggers.{CountTrigger, PurgingTrigger}
-import org.apache.flink.streaming.api.windowing.windows.{GlobalWindow, TimeWindow, Window}
+import org.apache.flink.streaming.api.windowing.triggers.CountTrigger
+import org.apache.flink.streaming.api.windowing.windows.{GlobalWindow, TimeWindow}
 
 import java.time.Instant
 import scala.concurrent.duration._
@@ -285,6 +285,11 @@ object Windows {
   Example output:
   5> (GlobalWindow,10)
    */
+
+  /**
+    * Exercise:
+    * - What was the time slot of two seconds when we had the most number of online players?
+    */
 
   def main(args: Array[String]): Unit = {
 
