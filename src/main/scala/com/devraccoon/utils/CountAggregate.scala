@@ -5,7 +5,7 @@ import org.apache.flink.streaming.api.scala.function.{
   ProcessAllWindowFunction,
   ProcessWindowFunction
 }
-import org.apache.flink.streaming.api.windowing.windows.TimeWindow
+import org.apache.flink.streaming.api.windowing.windows.Window
 import org.apache.flink.util.Collector
 
 /**
@@ -49,24 +49,24 @@ class CountAggregate[A](predicate: A => Boolean)
   override def merge(a: Long, b: Long): Long = a + b
 }
 
-class CountInWindow[A, Key]
-    extends ProcessWindowFunction[A, (Key, TimeWindow, Long), Key, TimeWindow] {
+class CountInWindow[A, Key, W <: Window]
+    extends ProcessWindowFunction[A, (Key, W, Long), Key, W] {
   override def process(
       key: Key,
       context: Context,
       elements: Iterable[A],
-      out: Collector[(Key, TimeWindow, Long)]
+      out: Collector[(Key, W, Long)]
   ): Unit = {
     out.collect((key, context.window, elements.size))
   }
 }
 
-class CountInAllWindowFunction[A, Key](predicate: A => Boolean)
-    extends ProcessAllWindowFunction[A, (TimeWindow, Long), TimeWindow] {
+class CountInAllWindow[A, Key, W <: Window](predicate: A => Boolean)
+    extends ProcessAllWindowFunction[A, (W, Long), W] {
   override def process(
       context: Context,
       elements: Iterable[A],
-      out: Collector[(TimeWindow, Long)]
+      out: Collector[(W, Long)]
   ): Unit = {
     out.collect((context.window, elements.count(predicate)))
   }

@@ -1,22 +1,12 @@
 package com.devraccoon.part1essentialStreams
 
-import com.devraccoon.utils.{
-  CountAggregate,
-  CountInAllWindowFunction,
-  CountInWindow
-}
-import org.apache.flink.api.common.eventtime.{
-  SerializableTimestampAssigner,
-  WatermarkStrategy
-}
-import org.apache.flink.streaming.api.scala.StreamExecutionEnvironment
-import org.apache.flink.streaming.api.scala._
-import org.apache.flink.streaming.api.windowing.assigners.{
-  SlidingEventTimeWindows,
-  TumblingEventTimeWindows
-}
+import com.devraccoon.utils.{CountInAllWindow, CountInWindow}
+import org.apache.flink.api.common.eventtime.{SerializableTimestampAssigner, WatermarkStrategy}
+import org.apache.flink.streaming.api.scala.{StreamExecutionEnvironment, _}
+import org.apache.flink.streaming.api.windowing.assigners.{EventTimeSessionWindows, GlobalWindows, SlidingEventTimeWindows, TumblingEventTimeWindows}
 import org.apache.flink.streaming.api.windowing.time.Time
-import org.apache.flink.streaming.api.windowing.windows.TimeWindow
+import org.apache.flink.streaming.api.windowing.triggers.{CountTrigger, PurgingTrigger}
+import org.apache.flink.streaming.api.windowing.windows.{GlobalWindow, TimeWindow, Window}
 
 import java.time.Instant
 import scala.concurrent.duration._
@@ -106,7 +96,7 @@ object Windows {
 
   val nonKeyedRegistrationsPerThreeSeconds: DataStream[(TimeWindow, Long)] =
     threeSecondsTumblingWindowNonKeyed.process(
-      new CountInAllWindowFunction[ServerEvent, String](
+      new CountInAllWindow(
         _.isInstanceOf[PlayerRegistered]
       )
     )
@@ -160,7 +150,7 @@ object Windows {
   val countPerTypePerWindow: DataStream[(String, TimeWindow, Long)] =
     threeSecondsTumblingWindows
       .process(
-        new CountInWindow[ServerEvent, String]()
+        new CountInWindow()
       )
   /*
   1> (PlayerRegistered,TimeWindow{start=1643760000000, end=1643760003000},1)
@@ -218,11 +208,12 @@ object Windows {
     Sequence of counts: 1, 2, 4, 3, 3, 1, 2, 1, 1, 0
    */
 
-  val registrationInSlidingWindow: DataStream[(TimeWindow, Long)] = slidingWindowsAll.process(
-    new CountInAllWindowFunction[ServerEvent, String](
-      _.isInstanceOf[PlayerRegistered]
+  val registrationInSlidingWindow: DataStream[(TimeWindow, Long)] =
+    slidingWindowsAll.process(
+      new CountInAllWindow(
+        _.isInstanceOf[PlayerRegistered]
+      )
     )
-  )
   // Sample output of printing the above:
   /*
     (TimeWindow{start=1643760000000, end=1643760003000},1)
@@ -239,11 +230,70 @@ object Windows {
     (TimeWindow{start=1643760011000, end=1643760014000},0)
    */
 
+  // Session window
+  // For this type of window we define a gap between events. When gap is big enough, old window
+  // is closed and new one is opened.
+
+  // Using the data that we are already familiar with, let's see who from the users had two session
+  // if we define that a gap between sessions is 2 seconds
+  val sessionTimedWindows: AllWindowedStream[ServerEvent, TimeWindow] =
+    stream.windowAll(EventTimeSessionWindows.withGap(Time.seconds(2)))
+
+  val countEventsInSession: DataStream[(TimeWindow, Long)] =
+    sessionTimedWindows.process(
+      new CountInAllWindow(_ => true)
+    )
+
+  // if we print the above as is we would spot a one big window with all elements counted in.
+  // that happened because we are not separating the stream by users and all events in the stream
+  // are quite close together to form one large session.
+
+  // let's see how that will look like with proper keyed stream
+  val keyedSessionWindows: WindowedStream[ServerEvent, String, TimeWindow] =
+    stream
+      .keyBy(_.getId)
+      .window(EventTimeSessionWindows.withGap(Time.seconds(2)))
+
+  val countEventsInKeyedSession: DataStream[(String, TimeWindow, Long)] =
+    keyedSessionWindows.process(
+      new CountInWindow
+    )
+
+  /*
+  As expected we have:
+  - 1 window for bob, sam and mary
+  - 2 windows for carl, alice and rob
+  Number of windows here equals number of sessions with a gap of 2 seconds
+   */
+
+  // global window
+  // global window is one lage window for all events. More like batch mode.
+  val globalWindowAll: DataStream[(GlobalWindow, Long)] = stream
+    .windowAll(GlobalWindows.create())
+    .trigger(CountTrigger.of[GlobalWindow](10))
+    .process(new CountInAllWindow(_ => true))
+
+  // Ooops! Nothing is returned. Why is that?
+  // Global window is global. Means that for potentially unbounded stream
+  // the global window is infinite. Flink needs a hint here when to release
+  // the window and run the transformations. The hint in a form of a custom
+  // trigger.
+  // Custom trigger can be based on count, for instance.
+
+  // With added trigger we have only one result fired with 10 elements counted
+  /*
+  Example output:
+  5> (GlobalWindow,10)
+   */
+
   def main(args: Array[String]): Unit = {
 
     // nonKeyedRegistrationsPerThreeSeconds.print()
     // countPerTypePerWindow.print()
-    registrationInSlidingWindow.print()
+    // registrationInSlidingWindow.print()
+    // countEventsInSession.print()
+    // countEventsInKeyedSession.print()
+    globalWindowAll.print()
 
     env.execute()
   }

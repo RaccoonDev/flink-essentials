@@ -39,7 +39,7 @@ object events {
       playerId: UUID,
       nickname: String
   ) extends ServerEvent {
-    override def getId: String = s"player|$playerId"
+    override def getId: String = s"player|$playerId|$nickname"
   }
 
   final case class PlayerOnline(
@@ -47,7 +47,7 @@ object events {
       playerId: UUID,
       nickname: String
   ) extends ServerEvent {
-    override def getId: String = s"player|$playerId"
+    override def getId: String = s"player|$playerId|$nickname"
   }
 
   final case class PlayerIsLookingForAGame(
@@ -63,7 +63,7 @@ object events {
       playerId: UUID,
       nickname: String
   ) extends ServerEvent {
-    override def getId: String = s"player|$playerId"
+    override def getId: String = s"player|$playerId|$nickname"
   }
 
   case class Player(playerId: UUID, nickname: String) {
