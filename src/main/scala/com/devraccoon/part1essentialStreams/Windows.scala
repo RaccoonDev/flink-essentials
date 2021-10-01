@@ -11,7 +11,10 @@ import org.apache.flink.api.common.eventtime.{
 }
 import org.apache.flink.streaming.api.scala.StreamExecutionEnvironment
 import org.apache.flink.streaming.api.scala._
-import org.apache.flink.streaming.api.windowing.assigners.TumblingEventTimeWindows
+import org.apache.flink.streaming.api.windowing.assigners.{
+  SlidingEventTimeWindows,
+  TumblingEventTimeWindows
+}
 import org.apache.flink.streaming.api.windowing.time.Time
 import org.apache.flink.streaming.api.windowing.windows.TimeWindow
 
@@ -96,7 +99,7 @@ object Windows {
   |         |         |                 |                 | alice registered  |       |                 |       |                 |     |               |              |
   ^|------------ window one -----------|^|-------------- window two -----------------|^|------------- window three --------------|^|----------- window four ----------|^
   |                                     |                                             |                                           |                                    |
-  |            1 registrations          |               3 registrations               |              1 registration               |            0 registrations         |
+  |            1 registrations          |               3 registrations               |              2 registration               |            0 registrations         |
   |     1643760000000 - 1643760003000   |        1643760005000 - 1643760006000        |       1643760006000 - 1643760009000       |    1643760009000 - 1643760012000   |
    */
   // So, we expect 4 results: 4 windows / 1 result per window
@@ -114,25 +117,133 @@ object Windows {
   // [[MARK A]]
   // Re-run with printing in the main
 
-  // Example of a keyed stream. Key here represents a very unique id of an event
+  /*
+    Sample output:
+    4> (TimeWindow{start=1643760003000, end=1643760006000},3)
+    6> (TimeWindow{start=1643760009000, end=1643760012000},0)
+    3> (TimeWindow{start=1643760000000, end=1643760003000},1)
+    5> (TimeWindow{start=1643760006000, end=1643760009000},2)
+   */
+
+  // Now let's see what happens if we create keyed stream. Let's group events by simple class name.
   val streamByType: KeyedStream[ServerEvent, String] =
     stream.keyBy(e => e.getClass.getSimpleName)
 
+  // Each elements of the original stream is going to be assigned to a separate "stream" for a given key
   val threeSecondsTumblingWindows
       : WindowedStream[ServerEvent, String, TimeWindow] =
     streamByType.window(TumblingEventTimeWindows.of(Time.seconds(3)))
+  /*
 
+  We can expect something like that:
+
+  === Registration Events Stream ===
+  |----0----|----1----|--------2--------|--------3--------|---------4---------|---5---|--------6--------|---7---|--------8--------|--9--|------10-------|------11------|
+  |         |         | bob registered  | sam registered  | rob registered    |       | mary registered |       | carl registered |     |               |              |
+  |         |         |                 |                 | alice registered  |       |                 |       |                 |     |               |              |
+  ^|------------ window one -----------|^|-------------- window two -----------------|^|------------- window three --------------|^|----------- window four ----------|^
+  |            1 registrations          |               3 registrations               |              2 registration               |            0 registrations         |
+  |     1643760000000 - 1643760003000   |        1643760005000 - 1643760006000        |       1643760006000 - 1643760009000       |    1643760009000 - 1643760012000   |
+
+  === Online Events Stream ===
+  |----0----|----1----|--------2--------|--------3--------|---------4---------|---5---|--------6--------|---7---|--------8--------|--9--|------10-------|------11------|
+  |         |         | bob online      |                 | sam online        |       | mary online     |       |                 |     | rob online    | carl online  |
+  |         |         |                 |                 |                   |       |                 |       |                 |     | alice online  |              |
+  ^|------------ window one -----------|^|-------------- window two -----------------|^|------------- window three --------------|^|----------- window four ----------|^
+  |            1 online                 |               1 online                      |              1 online                     |            3 online                |
+  |     1643760000000 - 1643760003000   |        1643760005000 - 1643760006000        |       1643760006000 - 1643760009000       |    1643760009000 - 1643760012000   |
+
+  So, there would be 7 elements in the output of this processing: 3 windows with count of registrations and 4 windows with count of online events.
+   */
+
+  // Let's see what we would have for counting.
   val countPerTypePerWindow: DataStream[(String, TimeWindow, Long)] =
     threeSecondsTumblingWindows
       .process(
         new CountInWindow[ServerEvent, String]()
       )
-  // with the above we can see that we are getting results per type per window
+  /*
+  1> (PlayerRegistered,TimeWindow{start=1643760000000, end=1643760003000},1)
+  6> (PlayerOnline,TimeWindow{start=1643760000000, end=1643760003000},1)
+  6> (PlayerOnline,TimeWindow{start=1643760003000, end=1643760006000},1)
+  1> (PlayerRegistered,TimeWindow{start=1643760003000, end=1643760006000},3)
+  6> (PlayerOnline,TimeWindow{start=1643760006000, end=1643760009000},1)
+  1> (PlayerRegistered,TimeWindow{start=1643760006000, end=1643760009000},2)
+  6> (PlayerOnline,TimeWindow{start=1643760009000, end=1643760012000},3)
+   */
+
+  // Sliding windows
+  val windowSize: Time = Time.seconds(3)
+  val windowSlide: Time = Time.seconds(1)
+  val slidingWindowsAll: AllWindowedStream[ServerEvent, TimeWindow] =
+    stream.windowAll(SlidingEventTimeWindows.of(windowSize, windowSlide))
+
+  /*
+  === Sliding windows ===
+    Assuming that are counting registration in the same fashion
+  |----0----|----1----|--------2--------|--------3--------|---------4---------|---5---|--------6--------|---7---|--------8--------|--9--|------10-------|------11------|
+  |         |         | bob registered  | sam registered  | sam online        |       | mary registered |       | carl registered |     | rob online    | carl online  |
+  |         |         | bob online      |                 | rob registered    |       | mary online     |       |                 |     | alice online  |              |
+  |         |         |                 |                 | alice registered  |       |                 |       |                 |     |               |              |
+  ^|------------ window one -----------|^|
+                1 registration
+
+           |^|---------------- window two ---------------|^|
+                                  2 registrations
+
+                      |^|------------------- window three -------------------|^|
+                                           4 registrations
+
+                                        |^|---------------- window four ---------------|^|
+                                                          3 registrations
+
+                                                         |^|---------------- window five --------------|^|
+                                                                           3 registrations
+
+                                                                              |^|---------- window six --------|^|
+                                                                                           1 registration
+
+                                                                                       |^|------------ window seven -----------|^|
+                                                                                                    2 registrations
+
+                                                                                                        |^|------- window eight-------|^|
+                                                                                                                  1 registration
+
+                                                                                                               |^|----------- window nine -----------|^|
+                                                                                                                        1 registration
+
+                                                                                                                                  |^|---------- window ten ---------|^|
+                                                                                                                                              0 registrations
+   9 windows in total with sliding number of registrations for each window:
+    Sequence of counts: 1, 2, 4, 3, 3, 1, 2, 1, 1, 0
+   */
+
+  val registrationInSlidingWindow: DataStream[(TimeWindow, Long)] = slidingWindowsAll.process(
+    new CountInAllWindowFunction[ServerEvent, String](
+      _.isInstanceOf[PlayerRegistered]
+    )
+  )
+  // Sample output of printing the above:
+  /*
+    (TimeWindow{start=1643760000000, end=1643760003000},1)
+    (TimeWindow{start=1643760001000, end=1643760004000},2)
+    (TimeWindow{start=1643760002000, end=1643760005000},4)
+    (TimeWindow{start=1643760003000, end=1643760006000},3)
+    (TimeWindow{start=1643760004000, end=1643760007000},3)
+    (TimeWindow{start=1643760005000, end=1643760008000},1)
+    (TimeWindow{start=1643760006000, end=1643760009000},2)
+    (TimeWindow{start=1643760007000, end=1643760010000},1)
+    (TimeWindow{start=1643760008000, end=1643760011000},1)
+    (TimeWindow{start=1643760009000, end=1643760012000},0)
+    (TimeWindow{start=1643760010000, end=1643760013000},0)
+    (TimeWindow{start=1643760011000, end=1643760014000},0)
+   */
 
   def main(args: Array[String]): Unit = {
 
-    nonKeyedRegistrationsPerThreeSeconds.print()
-    countPerTypePerWindow.print()
+    // nonKeyedRegistrationsPerThreeSeconds.print()
+    // countPerTypePerWindow.print()
+    registrationInSlidingWindow.print()
 
     env.execute()
   }
