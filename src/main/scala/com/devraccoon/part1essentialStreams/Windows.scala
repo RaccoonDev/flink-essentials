@@ -1,12 +1,29 @@
 package com.devraccoon.part1essentialStreams
 
-import com.devraccoon.utils.{CountInAllWindow, CountInWindow}
-import org.apache.flink.api.common.eventtime.{SerializableTimestampAssigner, WatermarkStrategy}
+import org.apache.flink.api.common.eventtime.{
+  SerializableTimestampAssigner,
+  WatermarkStrategy
+}
+import org.apache.flink.api.common.functions.AggregateFunction
+import org.apache.flink.streaming.api.scala.function.{
+  ProcessAllWindowFunction,
+  ProcessWindowFunction
+}
 import org.apache.flink.streaming.api.scala.{StreamExecutionEnvironment, _}
-import org.apache.flink.streaming.api.windowing.assigners.{EventTimeSessionWindows, GlobalWindows, SlidingEventTimeWindows, TumblingEventTimeWindows}
+import org.apache.flink.streaming.api.windowing.assigners.{
+  EventTimeSessionWindows,
+  GlobalWindows,
+  SlidingEventTimeWindows,
+  TumblingEventTimeWindows
+}
 import org.apache.flink.streaming.api.windowing.time.Time
 import org.apache.flink.streaming.api.windowing.triggers.CountTrigger
-import org.apache.flink.streaming.api.windowing.windows.{GlobalWindow, TimeWindow}
+import org.apache.flink.streaming.api.windowing.windows.{
+  GlobalWindow,
+  TimeWindow,
+  Window
+}
+import org.apache.flink.util.Collector
 
 import java.time.Instant
 import scala.concurrent.duration._
@@ -94,12 +111,72 @@ object Windows {
    */
   // So, we expect 4 results: 4 windows / 1 result per window
 
+  // Though, how would we count?
+  // We can use process function that for a given window would received not a single
+  // element but all elements from the window:
+  class CountInWindow[A, Key, W <: Window]
+      extends ProcessWindowFunction[A, (Key, W, Long), Key, W] {
+    override def process(
+        key: Key,
+        context: Context,
+        elements: Iterable[A],
+        out: Collector[(Key, W, Long)]
+    ): Unit = {
+      // conveniently here we can inject extra elements to output
+      // so that it would be easier for us to debug
+      // The output of this function would include value of current key,
+      // window and count of elements in the window
+      out.collect((key, context.window, elements.size))
+    }
+  }
+
+  // Note that the above is requires a key. That's because the above function can be applied only
+  // to a keyed streams.
+
+  // For non-keyed stream we would have to define another function.
+  // Let's add a predicate to this function as an illustration of a custom mechanics that
+  // can be added.
+  class CountInAllWindow[A, Key, W <: Window](predicate: A => Boolean)
+      extends ProcessAllWindowFunction[A, (W, Long), W] {
+
+    def this() = this((_: A) => true)
+
+    override def process(
+        context: Context,
+        elements: Iterable[A],
+        out: Collector[(W, Long)]
+    ): Unit = {
+      out.collect((context.window, elements.count(predicate)))
+    }
+  }
+
   val nonKeyedRegistrationsPerThreeSeconds: DataStream[(TimeWindow, Long)] =
     threeSecondsTumblingWindowNonKeyed.process(
       new CountInAllWindow(
         _.isInstanceOf[PlayerRegistered]
       )
     )
+
+  // alternatively we can use aggregate function with custom implementation
+  // This one is a bit more complex. You define own accumulator, specify
+  // what to do when a new element occurs, how to get a result and what to
+  // do when aggregation from multiple parallel computations are merged together.
+  threeSecondsTumblingWindowNonKeyed.aggregate(
+    new AggregateFunction[ServerEvent, Long, Long] {
+      // we start counting from zero
+      override def createAccumulator(): Long = 0
+
+      // every new element increases accumulator by one
+      override def add(value: ServerEvent, accumulator: Long): Long =
+        accumulator + 1
+
+      // result is the value of the accumulator
+      override def getResult(accumulator: Long): Long = accumulator
+
+      // on merge we just sum the values of two accumulators
+      override def merge(a: Long, b: Long): Long = a + b
+    }
+  )
 
   // let's print it and see the results.
   // OOPS! Record has Long.MIN_VALUE timestamp (= no timestamp marker). Is the time characteristic set to 'ProcessingTime', or did you forget to call 'DataStream.assignTimestampsAndWatermarks(...)'?
@@ -288,8 +365,15 @@ object Windows {
 
   /**
     * Exercise:
-    * - What was the time slot of two seconds when we had the most number of online players?
+    * - What was the time slot(s) of two seconds when we had the most number of online players?
+    *   hint: for now use executeAndCollect to get access to counted list
     */
+
+  val timeframesWithTheMostOnlinePlayers: DataStream[(TimeWindow, Long)] =
+    stream
+      .filter(_.isInstanceOf[PlayerRegistered])
+      .windowAll(SlidingEventTimeWindows.of(Time.seconds(2), Time.seconds(1)))
+      .process(new CountInAllWindow[ServerEvent, String, TimeWindow]())
 
   def main(args: Array[String]): Unit = {
 
@@ -298,8 +382,13 @@ object Windows {
     // registrationInSlidingWindow.print()
     // countEventsInSession.print()
     // countEventsInKeyedSession.print()
-    globalWindowAll.print()
+    // globalWindowAll.print()
 
-    env.execute()
+    // We can process the output of the stream in this app
+    println(
+      timeframesWithTheMostOnlinePlayers.executeAndCollect().toList.maxBy(_._2)
+    )
+
+//    env.execute()
   }
 }

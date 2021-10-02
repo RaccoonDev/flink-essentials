@@ -1,8 +1,14 @@
 package com.devraccoon.part1essentialStreams
 
+import org.apache.flink.api.common.functions.{
+  FlatMapFunction,
+  MapFunction,
+  ReduceFunction
+}
 import org.apache.flink.api.common.serialization.SimpleStringEncoder
 import org.apache.flink.core.fs.{FileSystem, Path}
 import org.apache.flink.streaming.api.datastream.DataStreamSink
+import org.apache.flink.streaming.api.functions.ProcessFunction
 import org.apache.flink.streaming.api.functions.sink.filesystem.StreamingFileSink
 import org.apache.flink.streaming.api.functions.sink.filesystem.rollingpolicies.DefaultRollingPolicy
 import org.apache.flink.streaming.api.scala.{
@@ -10,6 +16,7 @@ import org.apache.flink.streaming.api.scala.{
   StreamExecutionEnvironment
 }
 import org.apache.flink.streaming.api.scala._
+import org.apache.flink.util.Collector
 
 import java.util.concurrent.TimeUnit
 
@@ -226,6 +233,76 @@ object BuiltIn {
 
   // The state of files and the files lifecycle we'll cover in one of our next lessons.
 
+  // execute and collect
+  // In case I would like to get result of a flink job and the process
+  // them in local application, instead of execute() I can run executeAndCollect()
+
+  // let's illustrate with example
+  val executeAndCollectEnv: StreamExecutionEnvironment =
+    StreamExecutionEnvironment.getExecutionEnvironment
+
+  // let's gram our fizz buzz generator
+  val fizzBuzzGameOutput: DataStream[FizzBuzzOutput] = executeAndCollectEnv
+    .fromSequence(1, 100)
+    .map((n: Long) =>
+      n match {
+        case x if x % 3 == 0 && x % 5 == 0 => FizzBuzzOutput(x, "FizzBuzz")
+        case x if x % 3 == 0               => FizzBuzzOutput(x, "Fizz")
+        case x if x % 5 == 0               => FizzBuzzOutput(x, "Buzz")
+        case x                             => FizzBuzzOutput(x, x.toString)
+      }
+    )
+
+  // More on custom transformations
+  val customTransformationsEnv: StreamExecutionEnvironment =
+    StreamExecutionEnvironment.getExecutionEnvironment
+  val sequence: DataStream[Long] =
+    customTransformationsEnv.fromSequence(1, 42)
+  // In Flink transformations are represented as classes that extends
+  // appropriate interface. For instance:
+
+  // Normal map
+  val mapToString: DataStream[String] =
+    sequence.map(number => s"This is a number: $number")
+
+  // Function class map - equivalent to the above
+  val mapToString_2: DataStream[String] =
+    sequence.map(new MapFunction[Long, String] {
+      override def map(value: Long): String = s"This is a number: $value"
+    })
+
+  // Normal flatmap
+  val flatMapToString: DataStream[String] =
+    sequence.flatMap(n => Range.Long(0, n, 1).map(n2 => s"number: $n2"))
+
+  // Function class flatMap
+  val flatMapToString_v2: DataStream[String] =
+    sequence.flatMap(new FlatMapFunction[Long, String] {
+      override def flatMap(value: Long, out: Collector[String]): Unit =
+        Range.Long(0, value, 1).foreach(n => out.collect(s"number: $n"))
+    })
+
+  // The ultimate processing power comes with "process" functions
+  sequence.process(new ProcessFunction[Long, String] {
+    // Here we can do whatever we want with elements that comes one by one
+    override def processElement(
+        value: Long,
+        ctx: ProcessFunction[Long, String]#Context,
+        out: Collector[String]
+    ): Unit =
+      out.collect(s"number: $value") // makes just a conversion like map does
+  })
+
+  // Reduction happens on keyed streams. For instance, let's split the sequence into two key sets (two streams)
+  val twoStreamsOfNumbers: KeyedStream[Long, Boolean] =
+    sequence.keyBy(n => n % 2 == 0)
+  // now we can reduce both to a sum
+  twoStreamsOfNumbers.reduce(_ + _)
+  // or equivalently
+  twoStreamsOfNumbers.reduce(new ReduceFunction[Long] {
+    override def reduce(value1: Long, value2: Long): Long = value1 + value2
+  })
+
   def main(args: Array[String]): Unit = {
 
     // synchronous execution of a Flink job without specifying job name
@@ -240,6 +317,11 @@ object BuiltIn {
 
     // async flink job execution
     // env.executeAsync()
+
+    // executeAndCollect run
+    val resultOfFIzzBuzzGame: List[FizzBuzzOutput] =
+      fizzBuzzGameOutput.executeAndCollect().toList
+    println(resultOfFIzzBuzzGame)
   }
 
 }
