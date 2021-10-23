@@ -9,7 +9,7 @@ import org.apache.flink.streaming.api.scala.function.{
   ProcessAllWindowFunction,
   ProcessWindowFunction
 }
-import org.apache.flink.streaming.api.scala.{StreamExecutionEnvironment, _}
+import org.apache.flink.streaming.api.scala._
 import org.apache.flink.streaming.api.windowing.assigners.{
   EventTimeSessionWindows,
   GlobalWindows,
