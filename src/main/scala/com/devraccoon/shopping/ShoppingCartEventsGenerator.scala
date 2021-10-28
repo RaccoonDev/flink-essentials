@@ -7,6 +7,7 @@ import scala.annotation.tailrec
 
 // Let's keep very very simple shopping cart events
 sealed trait ShoppingCartEvent {
+  def userId: String
   def time: java.time.Instant
 }
 
@@ -48,7 +49,7 @@ class ShoppingCartEventsGenerator(
     }
 
   private def generateRandomEvents(id: Long): Seq[AddToShoppingCartEvent] = {
-    (1 to batchSize)
+    val events = (1 to batchSize)
       .map(_ =>
         AddToShoppingCartEvent(
           getRandomUser,
@@ -57,6 +58,9 @@ class ShoppingCartEventsGenerator(
           baseInstant.plusSeconds(id)
         )
       )
+
+    println(s"[${System.currentTimeMillis()}] Releasing events: $events")
+    events
   }
 
   override def run(
