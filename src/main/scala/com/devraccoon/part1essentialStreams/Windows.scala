@@ -146,7 +146,7 @@ object Windows {
         elements: Iterable[A],
         out: Collector[(W, Long)]
     ): Unit = {
-      println(s"Window ${context.window} content: $elements")
+//      println(s"Window ${context.window} content: $elements")
       out.collect((context.window, elements.count(predicate)))
     }
   }

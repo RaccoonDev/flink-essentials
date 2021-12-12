@@ -71,7 +71,7 @@ object TimeBasedTransformations {
 
   // Running that we see that there is nothing in output stream. We have asked Flink to group events into 3 seconds
   // windows by the processing time, but, the application never processed anything for 3 seconds. So, processing
-  // exists without emitting any results.
+  // exits without emitting any results.
 
   // Let's try some more realistic and relevant scenario for processing time.
 

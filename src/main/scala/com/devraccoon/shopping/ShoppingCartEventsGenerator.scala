@@ -35,7 +35,7 @@ class ShoppingCartEventsGenerator(
 ) extends SourceFunction[ShoppingCartEvent] {
   import com.devraccoon.shopping.ShoppingCartEventsGenerator._
 
-  @volatile private var running = true;
+  @volatile private var running = true
 
   @tailrec
   private def run(
@@ -66,6 +66,40 @@ class ShoppingCartEventsGenerator(
   override def run(
       ctx: SourceFunction.SourceContext[ShoppingCartEvent]
   ): Unit = run(0, ctx)
+
+  override def cancel(): Unit = { running = false }
+}
+
+class SingleShoppingCartEventsGenerator(
+    sleepMillisBetweenEvents: Int,
+    baseInstant: java.time.Instant = java.time.Instant.now(),
+    extraDelayInMillisOnEveryTenEvents: Option[Long] = None
+) extends SourceFunction[ShoppingCartEvent] {
+  import com.devraccoon.shopping.ShoppingCartEventsGenerator._
+
+  @volatile private var running = true
+
+  @tailrec
+  private def run(
+      id: Long,
+      ctx: SourceFunction.SourceContext[ShoppingCartEvent]
+  ): Unit =
+    if (running) {
+      ctx.collect(
+        AddToShoppingCartEvent(
+          getRandomUser,
+          UUID.randomUUID().toString,
+          getRandomQuantity,
+          baseInstant.plusSeconds(id)
+        )
+      )
+      Thread.sleep(sleepMillisBetweenEvents)
+      if (id % 10 == 0) extraDelayInMillisOnEveryTenEvents.foreach(Thread.sleep)
+      run(id + 1, ctx)
+    }
+
+  override def run(ctx: SourceFunction.SourceContext[ShoppingCartEvent]): Unit =
+    run(1, ctx)
 
   override def cancel(): Unit = { running = false }
 }
