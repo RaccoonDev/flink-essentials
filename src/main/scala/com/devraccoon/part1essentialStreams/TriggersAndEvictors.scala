@@ -243,22 +243,52 @@ object TriggersAndEvictors {
     // Evictors are much simpler: these gives ability to remove elements from a window after the trigger fires and
     // before and/or after teh window function is applied.
 
-    // TODO: Implement this
-    class MyCountEvictor extends Evictor[ShoppingCartEvent, TimeWindow] {
+    class MyCountEvictor(maxSize: Int, runBefore: Boolean)
+        extends Evictor[ShoppingCartEvent, TimeWindow] {
+
+      private def evict(
+          size: Int,
+          elements: lang.Iterable[TimestampedValue[ShoppingCartEvent]]
+      ): Unit =
+        if (size > maxSize) {
+          val iterator = elements.iterator()
+          (0 until size - maxSize).foreach { _ =>
+            iterator.next()
+            iterator.remove()
+          }
+        }
+
       override def evictBefore(
           elements: lang.Iterable[TimestampedValue[ShoppingCartEvent]],
           size: Int,
           window: TimeWindow,
           evictorContext: Evictor.EvictorContext
-      ): Unit = ???
+      ): Unit = if (runBefore) evict(size, elements)
 
       override def evictAfter(
           elements: lang.Iterable[TimestampedValue[ShoppingCartEvent]],
           size: Int,
           window: TimeWindow,
           evictorContext: Evictor.EvictorContext
-      ): Unit = ???
+      ): Unit = if (!runBefore) evict(size, elements)
     }
+
+    // This configuration should keep only 3 last events per window
+//    windowedShoppingCartEventsStream
+//      .evictor(new MyCountEvictor(3, true))
+//      .process(new CountInAllWindow(_ => true))
+//      .print()
+
+    /*
+      Sample output:
+      4> (TimeWindow{start=1639336320000, end=1639336330000},2)
+      5> (TimeWindow{start=1639336330000, end=1639336340000},3)
+      6> (TimeWindow{start=1639336340000, end=1639336350000},3)
+      7> (TimeWindow{start=1639336350000, end=1639336360000},3)
+
+      For every window we emitting only 3 events per window. Others
+      events are evicted by our evictor.
+     */
 
     countTriggerEnv.execute()
 
