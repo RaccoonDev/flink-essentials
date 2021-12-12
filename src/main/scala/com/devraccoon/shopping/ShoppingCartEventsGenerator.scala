@@ -4,6 +4,7 @@ import org.apache.flink.streaming.api.functions.source.SourceFunction
 
 import java.util.UUID
 import scala.annotation.tailrec
+import com.devraccoon.shopping.ShoppingCartEventsGenerator._
 
 // Let's keep very very simple shopping cart events
 sealed trait ShoppingCartEvent {
@@ -73,35 +74,49 @@ class ShoppingCartEventsGenerator(
 class SingleShoppingCartEventsGenerator(
     sleepMillisBetweenEvents: Int,
     baseInstant: java.time.Instant = java.time.Instant.now(),
-    extraDelayInMillisOnEveryTenEvents: Option[Long] = None
-) extends SourceFunction[ShoppingCartEvent] {
-  import com.devraccoon.shopping.ShoppingCartEventsGenerator._
+    extraDelayInMillisOnEveryTenEvents: Option[Long] = None,
+    sourceId: Option[String] = None
+) extends EventGenerator[ShoppingCartEvent](
+      sleepMillisBetweenEvents,
+      id =>
+        AddToShoppingCartEvent(
+          getRandomUser,
+          sourceId
+            .map(sId => s"${sId}_${UUID.randomUUID()}")
+            .getOrElse(UUID.randomUUID().toString),
+          getRandomQuantity,
+          baseInstant.plusSeconds(id)
+        ),
+      extraDelayInMillisOnEveryTenEvents
+    )
 
+class EventGenerator[T](
+    sleepMillisBetweenEvents: Int,
+    generator: Long => T,
+    extraDelayInMillisOnEveryTenEvents: Option[Long] = None
+) extends SourceFunction[T] {
   @volatile private var running = true
 
   @tailrec
   private def run(
       id: Long,
-      ctx: SourceFunction.SourceContext[ShoppingCartEvent]
+      ctx: SourceFunction.SourceContext[T]
   ): Unit =
     if (running) {
       ctx.collect(
-        AddToShoppingCartEvent(
-          getRandomUser,
-          UUID.randomUUID().toString,
-          getRandomQuantity,
-          baseInstant.plusSeconds(id)
-        )
+        generator(id)
       )
       Thread.sleep(sleepMillisBetweenEvents)
       if (id % 10 == 0) extraDelayInMillisOnEveryTenEvents.foreach(Thread.sleep)
       run(id + 1, ctx)
     }
 
-  override def run(ctx: SourceFunction.SourceContext[ShoppingCartEvent]): Unit =
+  override def run(ctx: SourceFunction.SourceContext[T]): Unit =
     run(1, ctx)
 
-  override def cancel(): Unit = { running = false }
+  override def cancel(): Unit = {
+    running = false
+  }
 }
 
 object ShoppingCartEventsGenerator {
@@ -111,3 +126,29 @@ object ShoppingCartEventsGenerator {
 
   def getRandomQuantity: Int = scala.util.Random.nextInt(10)
 }
+
+sealed trait CatalogEvent {
+  def userId: String
+  def time: java.time.Instant
+}
+
+case class ProductDetailsViewed(
+    userId: String,
+    time: java.time.Instant,
+    productId: String
+) extends CatalogEvent
+
+class CatalogEventsGenerator(
+    sleepMillisBetweenEvents: Int,
+    baseInstant: java.time.Instant = java.time.Instant.now(),
+    extraDelayInMillisOnEveryTenEvents: Option[Long] = None
+) extends EventGenerator[CatalogEvent](
+      sleepMillisBetweenEvents,
+      id =>
+        ProductDetailsViewed(
+          getRandomUser,
+          baseInstant.plusSeconds(id),
+          UUID.randomUUID().toString
+        ),
+      extraDelayInMillisOnEveryTenEvents
+    )
