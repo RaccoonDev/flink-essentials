@@ -1,6 +1,5 @@
 package com.devraccoon.part1essentialStreams
 
-import com.devraccoon.part1essentialStreams.Windows.CountInAllWindow
 import com.devraccoon.shopping.{
   ShoppingCartEvent,
   SingleShoppingCartEventsGenerator

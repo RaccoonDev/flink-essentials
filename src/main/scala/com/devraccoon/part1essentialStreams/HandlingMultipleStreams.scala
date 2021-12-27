@@ -13,7 +13,12 @@ import org.apache.flink.api.common.eventtime.{
   WatermarkStrategy
 }
 import org.apache.flink.api.common.functions.JoinFunction
-import org.apache.flink.streaming.api.functions.co.ProcessJoinFunction
+import org.apache.flink.streaming.api.functions.co.{
+  CoFlatMapFunction,
+  CoMapFunction,
+  CoProcessFunction,
+  ProcessJoinFunction
+}
 import org.apache.flink.streaming.api.scala.StreamExecutionEnvironment
 import org.apache.flink.streaming.api.scala._
 import org.apache.flink.streaming.api.windowing.assigners.TumblingProcessingTimeWindows
@@ -34,6 +39,96 @@ object HandlingMultipleStreams {
 //    windowJoins
 
     // Interval Joins
+//    intervalJoins
+
+    // Connect
+    connect
+
+  }
+
+  private def union: JobExecutionResult = {
+    // This one is easy. Take two or more streams and send events from the streams to output.
+
+    val unionEnv = StreamExecutionEnvironment.getExecutionEnvironment
+    // Let's say we have to streams from different sources, but about the same data
+    val shoppingCartEventStreamFromKafka: DataStream[ShoppingCartEvent] =
+      unionEnv.addSource(
+        new SingleShoppingCartEventsGenerator(300, sourceId = Option("kafka"))
+      )
+    val shoppingCartEventStreamFromFileMonitor: DataStream[ShoppingCartEvent] =
+      unionEnv.addSource(
+        new SingleShoppingCartEventsGenerator(1000, sourceId = Option("file"))
+      )
+
+    val combinedSingleStreamOfEventsFromBothSources
+        : DataStream[ShoppingCartEvent] =
+      shoppingCartEventStreamFromKafka.union(
+        shoppingCartEventStreamFromFileMonitor
+      )
+
+    combinedSingleStreamOfEventsFromBothSources.print()
+
+    /*
+    Sample output of the above shows that events from both streams are combined:
+    6> AddToShoppingCartEvent(Bob,file_545ac79b-7196-4690-a93e-f47ab5d6eca8,5,2021-12-12T22:37:56.369417Z)
+    3> AddToShoppingCartEvent(Rob,kafka_07176b92-91ff-4460-b950-5b60efb356c7,6,2021-12-12T22:37:56.086243Z)
+    4> AddToShoppingCartEvent(Sam,kafka_6ca2830d-c543-458e-b718-c799a352a0be,6,2021-12-12T22:37:57.086243Z)
+    5> AddToShoppingCartEvent(Rob,kafka_dfa2f2df-f15d-4bbd-a389-28f36e4cda64,3,2021-12-12T22:37:58.086243Z)
+    6> AddToShoppingCartEvent(Tom,kafka_a07c4419-5527-4594-a1fa-e1231ae5879c,9,2021-12-12T22:37:59.086243Z)
+    7> AddToShoppingCartEvent(Alice,file_c5379d29-3bf6-409c-89c2-df668facbbb0,8,2021-12-12T22:37:57.369417Z)
+    7> AddToShoppingCartEvent(Rob,kafka_f50835cd-2174-40ba-a547-43ee6ceaa362,8,2021-12-12T22:38:00.086243Z)
+    8> AddToShoppingCartEvent(Tom,kafka_f5bad5e2-709d-4eba-8649-93f77a7867b4,0,2021-12-12T22:38:01.086243Z)
+    9> AddToShoppingCartEvent(Alice,kafka_55a76df2-0938-457e-b581-b77e908e8771,0,2021-12-12T22:38:02.086243Z)
+     */
+
+    unionEnv.execute()
+  }
+
+  private def windowJoins: JobExecutionResult = {
+    // Let's get an interesting representative example of this join. Let's say we have two website
+    // and users work with both websites simultaneously and we need to know how many events per given
+    // user happens within a give tumbling processing time window of let's say 10 seconds. That might
+    // show us how much of interaction between the websites is necessary for users to make the job done.
+
+    // More concrete example can be that user interacts with shopping cart and products details page.
+    // We need to know how many events happened in the same time window as events in shopping cart.
+
+    val windowJoinEnv = StreamExecutionEnvironment.getExecutionEnvironment
+    val shoppingCartEventsStream = windowJoinEnv.addSource(
+      new SingleShoppingCartEventsGenerator(300, sourceId = Option("kafka"))
+    )
+    val catalogEventsStream =
+      windowJoinEnv.addSource(new CatalogEventsGenerator(1000))
+
+    // This one connects two streams of different events
+    val join = shoppingCartEventsStream
+      .join(catalogEventsStream)
+      // here we specify how to tell that two events correlate one to another
+      .where(shoppingCartEvent => shoppingCartEvent.userId)
+      .equalTo(catalogEvent => catalogEvent.userId)
+      // now we specify in what time interval should flink look for this correlation
+      .window(TumblingProcessingTimeWindows.of(Time.seconds(10)))
+      // When correlation found the following function tells what to do with two
+      // correlated events
+      .apply(
+        new JoinFunction[
+          ShoppingCartEvent,
+          CatalogEvent,
+          (ShoppingCartEvent, CatalogEvent)
+        ] {
+          override def join(
+              first: ShoppingCartEvent,
+              second: CatalogEvent
+          ): (ShoppingCartEvent, CatalogEvent) = (first, second)
+        }
+      )
+
+    join.print()
+
+    windowJoinEnv.execute()
+  }
+
+  private def intervalJoins: JobExecutionResult = {
 
     // very similar to Window Joins but operates on keyed streams. So, if we key both streams of catalog and shopping
     // cart events by user id, we can user interval join with telling flink lower and upper time bounds to correlate
@@ -112,88 +207,143 @@ object HandlingMultipleStreams {
      */
 
     intervalJoinEnv.execute()
-
   }
 
-  private def union: JobExecutionResult = {
-    // This one is easy. Take two or more streams and send events from the streams to output.
+  private def connect: JobExecutionResult = {
+    val env = StreamExecutionEnvironment.getExecutionEnvironment
 
-    val unionEnv = StreamExecutionEnvironment.getExecutionEnvironment
-    // Let's say we have to streams from different sources, but about the same data
-    val shoppingCartEventStreamFromKafka: DataStream[ShoppingCartEvent] =
-      unionEnv.addSource(
-        new SingleShoppingCartEventsGenerator(300, sourceId = Option("kafka"))
+    // Connect operation on Flink stream accomplish a very cool goal: a way to have
+    // some state shared between several processing streams.
+
+    // Connect operation converts two DateStreams to a one ConnectedStream that can be
+    // processed via CoMap, CoFlatMap or a custom CoProcess functions.
+
+    // Let's see how that can be done.
+
+    val shoppingCartEvents: DataStream[ShoppingCartEvent] =
+      env.addSource(
+        new SingleShoppingCartEventsGenerator(100)
       )
-    val shoppingCartEventStreamFromFileMonitor: DataStream[ShoppingCartEvent] =
-      unionEnv.addSource(
-        new SingleShoppingCartEventsGenerator(1000, sourceId = Option("file"))
-      )
+    val catalogEventsStream: DataStream[CatalogEvent] =
+      env.addSource(new CatalogEventsGenerator(1000))
 
-    val combinedSingleStreamOfEventsFromBothSources
-        : DataStream[ShoppingCartEvent] =
-      shoppingCartEventStreamFromKafka.union(
-        shoppingCartEventStreamFromFileMonitor
-      )
+    // The below is a way to create a ConnectedStream from other two
+    val connectedStream: ConnectedStreams[ShoppingCartEvent, CatalogEvent] =
+      shoppingCartEvents.connect(catalogEventsStream)
 
-    combinedSingleStreamOfEventsFromBothSources.print()
+    // Connected stream input is not synchronized (here I mean that we receive events from any
+    // incoming streams independently) and we have a chance to process any of this as we would like.
 
-    /*
-    Sample output of the above shows that events from both streams are combined:
-    6> AddToShoppingCartEvent(Bob,file_545ac79b-7196-4690-a93e-f47ab5d6eca8,5,2021-12-12T22:37:56.369417Z)
-    3> AddToShoppingCartEvent(Rob,kafka_07176b92-91ff-4460-b950-5b60efb356c7,6,2021-12-12T22:37:56.086243Z)
-    4> AddToShoppingCartEvent(Sam,kafka_6ca2830d-c543-458e-b718-c799a352a0be,6,2021-12-12T22:37:57.086243Z)
-    5> AddToShoppingCartEvent(Rob,kafka_dfa2f2df-f15d-4bbd-a389-28f36e4cda64,3,2021-12-12T22:37:58.086243Z)
-    6> AddToShoppingCartEvent(Tom,kafka_a07c4419-5527-4594-a1fa-e1231ae5879c,9,2021-12-12T22:37:59.086243Z)
-    7> AddToShoppingCartEvent(Alice,file_c5379d29-3bf6-409c-89c2-df668facbbb0,8,2021-12-12T22:37:57.369417Z)
-    7> AddToShoppingCartEvent(Rob,kafka_f50835cd-2174-40ba-a547-43ee6ceaa362,8,2021-12-12T22:38:00.086243Z)
-    8> AddToShoppingCartEvent(Tom,kafka_f5bad5e2-709d-4eba-8649-93f77a7867b4,0,2021-12-12T22:38:01.086243Z)
-    9> AddToShoppingCartEvent(Alice,kafka_55a76df2-0938-457e-b581-b77e908e8771,0,2021-12-12T22:38:02.086243Z)
-     */
+    // To process such stream we should have an implementation of CoProcessFunction or KeyedCoProcessFunction.
+    // Normal ProcessFunction has one required method that tells Flink how to process incoming elements one by one.
+    // CoProcessFunction and its sister KeyedCoProcessFunction, have two methods to operate: one method tells Flink
+    // how to process element from one stream and another method tells flink how to process elements from another stream.
+    // But is it single and shared instance of the processing function.
 
-    unionEnv.execute()
-  }
+    // So, naive implementation of a counter that counts events from both streams can be implemented like that
+    // (I say naive because it uses transient var and does not work properly in parallel setup):
 
-  private def windowJoins: JobExecutionResult = {
-    // Let's get an interesting representative example of this join. Let's say we have two website
-    // and users work with both websites simultaneously and we need to know how many events per given
-    // user happens within a give tumbling processing time window of let's say 10 seconds. That might
-    // show us how much of interaction between the websites is necessary for users to make the job done.
+    env.setParallelism(1)
+    env.setMaxParallelism(1)
 
-    // More concrete example can be that user interacts with shopping cart and products details page.
-    // We need to know how many events happened in the same time window as events in shopping cart.
+    val connectedStreamWithCounter = connectedStream
+      .process(
+        new CoProcessFunction[ShoppingCartEvent, CatalogEvent, Long] {
+          @transient var totalCounter: Long = 0
 
-    val windowJoinEnv = StreamExecutionEnvironment.getExecutionEnvironment
-    val shoppingCartEventsString = windowJoinEnv.addSource(
-      new SingleShoppingCartEventsGenerator(300, sourceId = Option("kafka"))
-    )
-    val catalogEventsString =
-      windowJoinEnv.addSource(new CatalogEventsGenerator(1000))
+          override def processElement1(
+              value: ShoppingCartEvent,
+              ctx: CoProcessFunction[
+                ShoppingCartEvent,
+                CatalogEvent,
+                Long
+              ]#Context,
+              out: Collector[Long]
+          ): Unit = {
+            totalCounter = totalCounter + 1
+            out.collect(totalCounter)
+          }
 
-    // This one connects two streams of different events
-    val join = shoppingCartEventsString
-      .join(catalogEventsString)
-      // here we specify how to tell that two events correlate one to another
-      .where(shoppingCartEvent => shoppingCartEvent.userId)
-      .equalTo(catalogEvent => catalogEvent.userId)
-      // now we specify in what time interval should flink look for this correlation
-      .window(TumblingProcessingTimeWindows.of(Time.seconds(10)))
-      // When correlation found the following function tells what to do with two
-      // correlated events
-      .apply(
-        new JoinFunction[
-          ShoppingCartEvent,
-          CatalogEvent,
-          (ShoppingCartEvent, CatalogEvent)
-        ] {
-          override def join(
-              first: ShoppingCartEvent,
-              second: CatalogEvent
-          ): (ShoppingCartEvent, CatalogEvent) = (first, second)
+          override def processElement2(
+              value: CatalogEvent,
+              ctx: CoProcessFunction[
+                ShoppingCartEvent,
+                CatalogEvent,
+                Long
+              ]#Context,
+              out: Collector[Long]
+          ): Unit = {
+            totalCounter = totalCounter + 1
+            out.collect(totalCounter)
+          }
         }
       )
 
-    join.print()
+//    connectedStreamWithCounter.print()
 
-    windowJoinEnv.execute()
+    /*
+     Output of this application is a growing counter that counts events from both streams.
+     */
+
+    // As a handy shortcut for Map and FlatMap operations on top of a connected stream we have CoMap and CoFlatMap.
+    // We can have a full implementation here.
+    connectedStream.map(
+      new CoMapFunction[ShoppingCartEvent, CatalogEvent, Long] {
+        override def map1(value: ShoppingCartEvent): Long =
+          value.time.toEpochMilli
+
+        override def map2(value: CatalogEvent): Long = value.time.toEpochMilli
+      }
+    )
+
+    // or for some simpler transformations we can have just a call to a map function with two functions provided separately.
+    // For instance if we want to pass downstream only time of last received event either from shopping cart events stream
+    // or from catalog events stream.
+    connectedStream.map(
+      shoppingCartEvent => shoppingCartEvent.time,
+      catalogEvent => catalogEvent.time
+    )
+
+    // Flat map is pretty much the same thing as map, but in return type you can send out several element using
+    // provided collector.
+    val connectedFlatMappedStream = connectedStream.flatMap(
+      new CoFlatMapFunction[ShoppingCartEvent, CatalogEvent, String] {
+        override def flatMap1(
+            value: ShoppingCartEvent,
+            out: Collector[String]
+        ): Unit = {
+          out.collect(
+            "I have received a shopping cart event and I'll tell it again"
+          )
+          out.collect("I have received a shopping cart event")
+        }
+
+        override def flatMap2(
+            value: CatalogEvent,
+            out: Collector[String]
+        ): Unit =
+          out.collect("I have received a catalog event")
+      }
+    )
+
+    connectedFlatMappedStream.print()
+
+    /*
+    Output of the above is something like that:
+    I have received a shopping cart event and I'll tell it again
+    I have received a shopping cart event
+    I have received a catalog event
+    I have received a shopping cart event and I'll tell it again
+    I have received a shopping cart event
+    I have received a shopping cart event and I'll tell it again
+    I have received a shopping cart event
+    I have received a shopping cart event and I'll tell it again
+    I have received a shopping cart event
+    I have received a shopping cart event and I'll tell it again
+
+    Shopping cart events are received with much higher rate and are duplicated
+     */
+
+    env.execute()
   }
 }
