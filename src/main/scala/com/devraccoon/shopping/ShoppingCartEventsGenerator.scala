@@ -1,10 +1,14 @@
 package com.devraccoon.shopping
 
-import org.apache.flink.streaming.api.functions.source.SourceFunction
+import org.apache.flink.streaming.api.functions.source.{
+  RichParallelSourceFunction,
+  SourceFunction
+}
 
 import java.util.UUID
 import scala.annotation.tailrec
 import com.devraccoon.shopping.ShoppingCartEventsGenerator._
+import org.apache.flink.streaming.api.watermark.Watermark
 
 // Let's keep very very simple shopping cart events
 sealed trait ShoppingCartEvent {
@@ -93,6 +97,7 @@ class SingleShoppingCartEventsGenerator(
           .getOrElse(UUID.randomUUID().toString),
         baseInstant
       ),
+      baseInstant,
       extraDelayInMillisOnEveryTenEvents
     )
 
@@ -120,8 +125,9 @@ object SingleShoppingCartEventsGenerator {
 class EventGenerator[T](
     sleepMillisBetweenEvents: Int,
     generator: Long => T,
+    baseInstant: java.time.Instant,
     extraDelayInMillisOnEveryTenEvents: Option[Long] = None
-) extends SourceFunction[T] {
+) extends RichParallelSourceFunction[T] {
   @volatile private var running = true
 
   @tailrec
@@ -133,6 +139,9 @@ class EventGenerator[T](
       ctx.collect(
         generator(id)
       )
+      // Here this generator emits watermark mimicing the same logic of incrementing
+      // each element timestamp
+      ctx.emitWatermark(new Watermark(baseInstant.plusSeconds(id).toEpochMilli))
       Thread.sleep(sleepMillisBetweenEvents)
       if (id % 10 == 0) extraDelayInMillisOnEveryTenEvents.foreach(Thread.sleep)
       run(id + 1, ctx)
@@ -177,5 +186,6 @@ class CatalogEventsGenerator(
           baseInstant.plusSeconds(id),
           UUID.randomUUID().toString
         ),
+      baseInstant,
       extraDelayInMillisOnEveryTenEvents
     )

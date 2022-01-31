@@ -19,7 +19,6 @@ import org.apache.flink.streaming.api.functions.KeyedProcessFunction
 import org.apache.flink.streaming.api.scala._
 import org.apache.flink.util.Collector
 
-import java.lang
 import scala.collection.JavaConverters._
 
 object KeyedState {
@@ -361,7 +360,7 @@ object KeyedState {
       }
     }
 
-    eventsByUserId.process(new CleanUpAndTtlDemoProcessFunction).print()
+//    eventsByUserId.process(new CleanUpAndTtlDemoProcessFunction).print()
 
     /*
     Sample output that shows that clean up works.
@@ -382,6 +381,85 @@ object KeyedState {
     12> user_id: Bob - 3
     11> user_id: Tom - 3
 
+     */
+
+    /**
+      * Exercise time. Create a processing function that will count number of events
+      *   in next 10 seconds after receiving one and resets its timer afterwards repeating the aggregation.
+      *   That function is pretty much a windowing function with start on receiving an event.
+      *
+      *   Hint: use onTimer method
+      */
+
+    class TenSecondsAggregatingCount
+        extends KeyedProcessFunction[String, ShoppingCartEvent, String] {
+
+      // Let's create a stateful counter
+      private var stateCounter: ValueState[Long] = _
+      private var stateCounting: ValueState[Boolean] = _
+
+      override def open(parameters: Configuration): Unit = {
+        stateCounter = getRuntimeContext.getState(
+          new ValueStateDescriptor[Long]("counter", classOf[Long])
+        )
+
+        stateCounting = getRuntimeContext.getState(
+          new ValueStateDescriptor[Boolean]("isCounting", classOf[Boolean])
+        )
+      }
+
+      override def processElement(
+          value: ShoppingCartEvent,
+          ctx: KeyedProcessFunction[String, ShoppingCartEvent, String]#Context,
+          out: Collector[String]
+      ): Unit = {
+        stateCounter.update(stateCounter.value() + 1)
+        if (!stateCounting.value()) {
+          ctx
+            .timerService()
+            .registerEventTimeTimer(
+              ctx.timestamp() + Time.seconds(10).toMilliseconds
+            )
+          stateCounting.update(true)
+        }
+      }
+
+      override def onTimer(
+          timestamp: Long,
+          ctx: KeyedProcessFunction[
+            String,
+            ShoppingCartEvent,
+            String
+          ]#OnTimerContext,
+          out: Collector[String]
+      ): Unit = {
+        out.collect(
+          s"user_id: ${ctx.getCurrentKey} - collected ${stateCounter.value()} in last 10 seconds"
+        )
+        stateCounting.clear()
+        stateCounter.clear()
+      }
+    }
+
+    eventsByUserId.process(new TenSecondsAggregatingCount).print()
+
+    /*
+    TODO: Consider maybe to change this. Cause this one is tricky. Especially in the setup
+          of artificial event times in this generator. Event time is not equal to processing time
+          so, output comes quite fast because Flink works in the artificial time ignoring wallclock processing
+          time. Maybe confusing for new people.
+
+    Sample output:
+    2> user_id: Bob - collected 1 in last 10 seconds
+    1> user_id: Sam - collected 6 in last 10 seconds
+    11> user_id: Rob - collected 5 in last 10 seconds
+    11> user_id: Tom - collected 1 in last 10 seconds
+    9> user_id: Alice - collected 5 in last 10 seconds
+    1> user_id: Sam - collected 2 in last 10 seconds
+    12> user_id: Bob - collected 1 in last 10 seconds
+    9> user_id: Alice - collected 3 in last 10 seconds
+    1> user_id: Sam - collected 2 in last 10 seconds
+    9> user_id: Alice - collected 4 in last 10 seconds
      */
 
     env.execute()
