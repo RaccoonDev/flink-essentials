@@ -20,6 +20,13 @@ case class AddToShoppingCartEvent(
     time: java.time.Instant
 ) extends ShoppingCartEvent
 
+case class RemovedFromShoppingCartEvent(
+    userId: String,
+    sku: String,
+    quantity: Int,
+    time: java.time.Instant
+) extends ShoppingCartEvent
+
 // The below generator is inspired by generator in flink-training repository:
 // https://github.com/apache/flink-training/
 // Look for TaxiRideGenerator class
@@ -75,20 +82,40 @@ class SingleShoppingCartEventsGenerator(
     sleepMillisBetweenEvents: Int,
     baseInstant: java.time.Instant = java.time.Instant.now(),
     extraDelayInMillisOnEveryTenEvents: Option[Long] = None,
-    sourceId: Option[String] = None
+    sourceId: Option[String] = None,
+    generateRemoved: Boolean = false
 ) extends EventGenerator[ShoppingCartEvent](
       sleepMillisBetweenEvents,
-      id =>
-        AddToShoppingCartEvent(
-          getRandomUser,
-          sourceId
-            .map(sId => s"${sId}_${UUID.randomUUID()}")
-            .getOrElse(UUID.randomUUID().toString),
-          getRandomQuantity,
-          baseInstant.plusSeconds(id)
-        ),
+      SingleShoppingCartEventsGenerator.generateEvent(
+        generateRemoved,
+        sourceId
+          .map(sId => s"${sId}_${UUID.randomUUID()}")
+          .getOrElse(UUID.randomUUID().toString),
+        baseInstant
+      ),
       extraDelayInMillisOnEveryTenEvents
     )
+
+object SingleShoppingCartEventsGenerator {
+  def generateEvent
+      : (Boolean, String, java.time.Instant) => Long => ShoppingCartEvent =
+    (generateRemoved, sku, baseInstant) =>
+      id =>
+        if (!generateRemoved || scala.util.Random.nextBoolean())
+          AddToShoppingCartEvent(
+            getRandomUser,
+            sku,
+            getRandomQuantity,
+            baseInstant.plusSeconds(id)
+          )
+        else
+          RemovedFromShoppingCartEvent(
+            getRandomUser,
+            sku,
+            getRandomQuantity,
+            baseInstant.plusSeconds(id)
+          )
+}
 
 class EventGenerator[T](
     sleepMillisBetweenEvents: Int,

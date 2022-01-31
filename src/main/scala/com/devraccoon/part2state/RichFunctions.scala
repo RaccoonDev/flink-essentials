@@ -7,7 +7,6 @@ import com.devraccoon.shopping.{
 import org.apache.flink.api.common.functions.{
   MapFunction,
   RichFlatMapFunction,
-  RichFunction,
   RichMapFunction
 }
 import org.apache.flink.configuration.Configuration
