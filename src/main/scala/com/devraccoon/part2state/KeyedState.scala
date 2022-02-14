@@ -384,7 +384,93 @@ object KeyedState {
      */
 
     /**
-      * Exercise time. Create a processing function that will count number of events
+      * Exercise time. Create a processing function that takes shopping cart events, groups them by event type
+      * and then creates a map of counts per user id.
+      */
+
+    class EventsCountByUserId
+        extends KeyedProcessFunction[
+          String, // Here I am expecting this stream to be keyed by event type
+          ShoppingCartEvent,
+          (
+              String,
+              Map[String, Long]
+          ) // as a first element of this tuple I would like to return the key to understand what events the output map belongs to
+        ] {
+
+      private var eventsCount: MapState[String, Long] = _
+
+      override def open(parameters: Configuration): Unit = {
+        eventsCount = getRuntimeContext.getMapState(
+          new MapStateDescriptor[String, Long](
+            "eventsByUserId",
+            classOf[String],
+            classOf[Long]
+          )
+        )
+      }
+
+      override def processElement(
+          value: ShoppingCartEvent,
+          ctx: KeyedProcessFunction[
+            String,
+            ShoppingCartEvent,
+            (String, Map[String, Long])
+          ]#Context,
+          out: Collector[(String, Map[String, Long])]
+      ): Unit = {
+        eventsCount.put(
+          value.userId,
+          Option(eventsCount.get(value.userId)).getOrElse(0L) + 1L
+        )
+
+        out.collect(
+          (
+            ctx.getCurrentKey,
+            eventsCount.entries().asScala.map(e => e.getKey -> e.getValue).toMap
+          )
+        )
+      }
+    }
+
+    shoppingCartEvents
+      .keyBy(_.getClass.getSimpleName)
+      .process(new EventsCountByUserId)
+      .print()
+
+    /*
+      Sample output:
+        (RemovedFromShoppingCartEvent,Map(Tom -> 1))
+        4> (AddToShoppingCartEvent,Map(Tom -> 1))
+        10> (RemovedFromShoppingCartEvent,Map(Tom -> 2))
+        4> (AddToShoppingCartEvent,Map(Tom -> 1, Sam -> 1))
+        10> (RemovedFromShoppingCartEvent,Map(Tom -> 2, Sam -> 1))
+        4> (AddToShoppingCartEvent,Map(Tom -> 1, Bob -> 1, Sam -> 1))
+        10> (RemovedFromShoppingCartEvent,Map(Tom -> 3, Sam -> 1))
+        10> (RemovedFromShoppingCartEvent,Map(Tom -> 3, Bob -> 1, Sam -> 1))
+        4> (AddToShoppingCartEvent,Map(Tom -> 1, Bob -> 1, Alice -> 1, Sam -> 1))
+        10> (RemovedFromShoppingCartEvent,Map(Tom -> 3, Bob -> 1, Rob -> 1, Sam -> 1))
+        4> (AddToShoppingCartEvent,Map(Tom -> 1, Bob -> 2, Alice -> 1, Sam -> 1))
+        10> (RemovedFromShoppingCartEvent,Map(Tom -> 3, Bob -> 1, Rob -> 2, Sam -> 1))
+        4> (AddToShoppingCartEvent,Map(Sam -> 1, Rob -> 1, Tom -> 1, Bob -> 2, Alice -> 1))
+        10> (RemovedFromShoppingCartEvent,Map(Tom -> 3, Bob -> 1, Rob -> 3, Sam -> 1))
+        4> (AddToShoppingCartEvent,Map(Sam -> 1, Rob -> 1, Tom -> 1, Bob -> 3, Alice -> 1))
+        4> (AddToShoppingCartEvent,Map(Sam -> 1, Rob -> 2, Tom -> 1, Bob -> 3, Alice -> 1))
+        10> (RemovedFromShoppingCartEvent,Map(Tom -> 3, Bob -> 1, Rob -> 3, Sam -> 2))
+        4> (AddToShoppingCartEvent,Map(Sam -> 1, Rob -> 2, Tom -> 1, Bob -> 3, Alice -> 2))
+
+        This output shows how each event increase correspondent counter for a given user and all that is
+        associated with correspondent event type.
+
+        Though, I would recommend to think twice doing key by an event type, since that keying is very limited and it
+        is quite hard to properly distribute among processing nodes. For instance if we hve a distinct count of event type
+        equal to 4, we are limited to only 4 parallel processes.
+
+        // TODO: Would be nice to demonstrate that with an experiment.
+     */
+
+    /**
+      * Exercise time (advanced). Create a processing function that will count number of events
       *   in next 10 seconds after receiving one and resets its timer afterwards repeating the aggregation.
       *   That function is pretty much a windowing function with start on receiving an event.
       *
@@ -441,7 +527,7 @@ object KeyedState {
       }
     }
 
-    eventsByUserId.process(new TenSecondsAggregatingCount).print()
+//    eventsByUserId.process(new TenSecondsAggregatingCount).print()
 
     /*
     TODO: Consider maybe to change this. Cause this one is tricky. Especially in the setup
